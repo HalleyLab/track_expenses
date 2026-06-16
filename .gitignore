@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.pytest-target-temp/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.bak
+*.xlsx
+*.xls
+.env
+.venv/
+venv/
+dist/
+build/
+*.egg-info/

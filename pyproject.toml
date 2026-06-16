@@ -1,0 +1,17 @@
+[project]
+name = "order-screenshot-recognizer"
+version = "0.1.0"
+description = "Recognize order details from screenshots and append them to a balance workbook."
+requires-python = ">=3.10"
+dependencies = [
+  "Pillow>=9",
+  "openpyxl>=3.1",
+  "python-dateutil>=2.8",
+]
+
+[project.scripts]
+order-recognizer = "order_ocr.cli:main"
+order-recognizer-gui = "order_ocr.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
