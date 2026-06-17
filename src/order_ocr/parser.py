@@ -753,13 +753,32 @@ MARKETPLACE_ITEM_RE = re.compile(
     rf"(?P<price>{MARKETPLACE_PRICE_TOKEN})(?=\s*(?:[©@]\s*)?(?:Buy\s+it\s+again|View\s+your\s+item|$))",
     re.IGNORECASE | re.DOTALL,
 )
+MARKETPLACE_SELLER_RE = re.compile(
+    r"\b(?:Sold\s+by|Seller|Merchant|Vendor|Ships\s+from|Fulfilled\s+by)\s*:?\s+",
+    re.IGNORECASE,
+)
+MARKETPLACE_ACTION_RE = re.compile(
+    r"\b(?:"
+    r"Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|Go\s+to\s+cart|"
+    r"Return\s+or\s+replace\s+items|Track\s+package|Leave\s+seller\s+feedback|"
+    r"Write\s+a\s+product\s+review|Share\s+gift\s+receipt"
+    r")\b",
+    re.IGNORECASE,
+)
 MARKETPLACE_CONTROL_MARKERS = (
+    "add to bag",
+    "add to cart",
+    "add to list",
     "buy it again",
     "delivered today",
+    "for free delivery",
     "get product support",
+    "go to cart",
     "leave seller feedback",
+    "order details",
     "return or replace items",
     "share gift receipt",
+    "suggested",
     "track package",
     "view your item",
     "write a product review",
@@ -906,7 +925,7 @@ def extract_order_lines(lines: Iterable[str], reference: ReferenceData) -> list[
 def extract_marketplace_lines(lines: Iterable[str], reference: ReferenceData) -> list[OrderLine]:
     text = normalize_ocr_text(" ".join(lines))
     results: list[OrderLine] = []
-    sold_by_matches = list(re.finditer(r"\bSold\s+by:?\s+", text, flags=re.IGNORECASE))
+    sold_by_matches = list(MARKETPLACE_SELLER_RE.finditer(text))
     previous_end = 0
 
     for index, sold_match in enumerate(sold_by_matches):
@@ -936,7 +955,7 @@ def extract_marketplace_lines(lines: Iterable[str], reference: ReferenceData) ->
             )
         )
         after_price = sold_match.end() + price_match.end()
-        action_match = re.search(r"\bBuy\s+it\s+again\b(?:\s+View\s+your\s+item\b)?", text[after_price:next_sold_start], flags=re.IGNORECASE)
+        action_match = MARKETPLACE_ACTION_RE.search(text[after_price:next_sold_start])
         previous_end = after_price + (action_match.end() if action_match else 0)
 
     return _dedupe_order_lines(results)
@@ -968,6 +987,8 @@ def _parse_marketplace_price_token(value: str) -> float | None:
     has_currency = bool(re.search(r"[$\u00a5\uffe5]", compact))
     if not has_currency and re.match(r"^[sS][sS0-9]", compact):
         compact = "$" + compact[1:]
+    if re.fullmatch(r"[$\u00a5\uffe5]?[sS5]\s*[.\uff0e\u00b7]\s*[gG9]", compact):
+        compact = re.sub(r"([.\uff0e\u00b7])\s*[gG9]$", r"\g<1>99", compact)
     compact = compact.translate(str.maketrans({"S": "5", "s": "5"}))
     return parse_money_token(compact)
 
@@ -1028,25 +1049,64 @@ def _clean_marketplace_item(value: str) -> str:
         text = text[cut_at:]
 
     text = re.sub(
-        r"\b(?:Get\s+product\s+support|Track\s+package|Return\s+or\s+replace\s+items|Share\s+gift\s+receipt|Leave\s+seller\s+feedback|Write\s+a\s+product\s+review|Buy\s+it\s+again|View\s+your\s+item)\b",
+        r"\b(?:Get\s+product\s+support|Track\s+package|Return\s+or\s+replace\s+items|Share\s+gift\s+receipt|Leave\s+seller\s+feedback|Write\s+a\s+product\s+review|Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|Go\s+to\s+cart)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
     text = re.sub(r"\bDelivered\s+today\b.*?\bresident\b\.?", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" |,.-:\t\r\n")
+    text = re.sub(r"^(?:Delivered|Ordered|Purchased)\s+", "", text, flags=re.IGNORECASE)
+    text = _strip_marketplace_leading_price_noise(text)
     text = _strip_marketplace_leading_noise(text)
     if len(text) > 240:
         text = text[:240].strip(" |,.-:\t\r\n")
     return text
 
 
+def _strip_marketplace_leading_price_noise(text: str) -> str:
+    price_matches = list(MARKETPLACE_PRICE_RE.finditer(text))
+    if not price_matches:
+        return text
+    tail = text[price_matches[-1].end() :].strip(" |,.-:\t\r\n")
+    if _looks_like_marketplace_title_start(tail):
+        return tail
+    return text
+
+
 def _strip_marketplace_leading_noise(text: str) -> str:
-    return re.sub(
-        r"^(?:[A-Za-z]{1,4}\s+|\d{1,4}\s+){2,}(?=[A-Za-z0-9]+&[A-Za-z0-9]+|[A-Z][A-Z0-9-]{3,}\b)",
-        "",
-        text,
-    ).strip(" |,.-:\t\r\n")
+    tokens = text.split()
+    for index in range(1, min(5, len(tokens))):
+        prefix = tokens[:index]
+        tail = " ".join(tokens[index:])
+        if any(_is_ocr_noise_token(token) for token in prefix) and _looks_like_marketplace_title_start(tail):
+            return tail.strip(" |,.-:\t\r\n")
+    return text.strip(" |,.-:\t\r\n")
+
+
+def _is_ocr_noise_token(token: str) -> bool:
+    cleaned = token.strip(" |,.-:\t\r\n")
+    if re.fullmatch(r"\d{1,4}", cleaned):
+        return True
+    if 1 <= len(cleaned) <= 4 and re.search(r"[a-z].*[A-Z]", cleaned):
+        return True
+    return False
+
+
+def _looks_like_marketplace_title_start(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < 6:
+        return False
+    first = stripped.split(maxsplit=1)[0].strip(" |,.-:\t\r\n")
+    return bool(
+        re.search(r"[A-Za-z0-9\u4e00-\u9fff]", stripped)
+        and (
+            "&" in first
+            or bool(re.fullmatch(r"[A-Z0-9][A-Z0-9-]{3,}", first))
+            or bool(re.match(r"[A-Z][a-z]+(?:\s+[A-Z][A-Za-z0-9]+)", stripped))
+            or bool(re.search(r"[\u4e00-\u9fff]", stripped[:12]))
+        )
+    )
 
 
 def _strip_browser_noise_prefix(text: str) -> str:
