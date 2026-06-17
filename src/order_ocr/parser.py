@@ -754,7 +754,7 @@ MARKETPLACE_ITEM_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 MARKETPLACE_SELLER_RE = re.compile(
-    r"\b(?:Sold\s+by|Seller|Merchant|Vendor|Ships\s+from|Fulfilled\s+by)\s*:?\s+",
+    r"\b(?:(?:Sold\s+by|Ships\s+from|Fulfilled\s+by)\s*:?\s+|(?:Seller|Merchant|Vendor)\s*:\s+)",
     re.IGNORECASE,
 )
 MARKETPLACE_ACTION_RE = re.compile(

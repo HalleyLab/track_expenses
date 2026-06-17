@@ -312,6 +312,9 @@ def test_parse_noisy_web_order_sold_by_blocks_with_cart_noise():
     reference = ReferenceData(categories=[], item_category={})
     text = (
         "Order Details Ask Gemini MyWebpage QILLLAB Documents JHU Neuroscience "
+        "Delivered today Your package was delivered. It was handed directly to a resident. "
+        "Get product support Track package Return or replace items Share gift receipt Leave seller feedback "
+        "Write a product review Get product support Track package Return or replace items All Bookmarks WHOLE "
         "June 2 items $2.98 Add $22.02 for FREE delivery Go to Cart $1.49 qJ "
         "SMART&CASUAL 600 Feet 2mm Cotton Butcher Twine String Soft Food Safe for Cooking Craft Baker Kitchen Meat Turkey "
         "Sausage Roasting Gift Wrapping Gardening Crocheting Knitting Sold by: Smart Casual "
@@ -331,11 +334,14 @@ def test_parse_noisy_web_order_sold_by_blocks_with_cart_noise():
     assert candidate.purchase_date is None
     assert len(candidate.lines) == 4
     assert candidate.lines[0].item.startswith("SMART&CASUAL 600 Feet")
+    assert "Go to Cart" not in candidate.lines[0].item
+    assert "$1.49" not in candidate.lines[0].item
     assert candidate.lines[0].unit_price == 5.99
     assert candidate.lines[1].item.startswith("BENFEI USB C to HDMI")
     assert candidate.lines[1].unit_price == 6.99
     assert candidate.lines[2].item.startswith("Diet Coke Diet Soda")
     assert candidate.lines[3].item.startswith("Sprite Zero Sugar")
+    assert all(line.item != "Leave" for line in candidate.lines)
     assert all("Sparkle" not in line.item for line in candidate.lines)
 
 
