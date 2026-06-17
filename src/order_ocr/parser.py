@@ -179,9 +179,13 @@ KEYWORDS_BY_CATEGORY = {
     ),
     "Daily Necessities": (
         "body wash",
+        "butcher twine",
         "cleaner",
+        "cotton twine",
         "detergent",
         "dove",
+        "food safe string",
+        "kitchen twine",
         "paper",
         "saucepan",
         "shampoo",
@@ -191,6 +195,7 @@ KEYWORDS_BY_CATEGORY = {
         "toothbrush",
         "toothpaste",
         "towel",
+        "twine",
         "\u7eb8",
         "\u6c90\u6d74",
         "\u6d17\u53d1",
@@ -566,12 +571,16 @@ SEMANTIC_CATEGORY_KEYWORDS = {
     ),
     "Daily Necessities": (
         "body wash",
+        "butcher twine",
         "cleaner",
         "conditioner",
+        "cotton twine",
         "detergent",
         "dish soap",
+        "food safe string",
         "garbage bag",
         "hand soap",
+        "kitchen twine",
         "laundry",
         "mask",
         "napkin",
@@ -585,6 +594,7 @@ SEMANTIC_CATEGORY_KEYWORDS = {
         "toothpaste",
         "towel",
         "trash bag",
+        "twine",
         "\u4fdd\u9c9c\u819c",
         "\u536b\u751f\u5dfe",
         "\u536b\u751f\u7eb8",
@@ -647,7 +657,23 @@ SEMANTIC_CATEGORY_KEYWORDS = {
 }
 
 CONTEXT_EXCLUSIONS = {
-    "Protein": ("\u86cb\u7cd5", "\u7cd5\u70b9", "\u6d17\u9762\u5976", "\u9762\u819c", "\u62a4\u80a4", "\u6d17\u53d1"),
+    "Protein": (
+        "butcher twine",
+        "cotton butcher",
+        "craft baker",
+        "crocheting",
+        "food safe string",
+        "gardening",
+        "knitting",
+        "twine",
+        "wrapping",
+        "\u86cb\u7cd5",
+        "\u7cd5\u70b9",
+        "\u6d17\u9762\u5976",
+        "\u9762\u819c",
+        "\u62a4\u80a4",
+        "\u6d17\u53d1",
+    ),
     "Carbonhydrate": ("\u9762\u819c", "\u6d17\u9762\u5976"),
     "Vegetables": (
         "chili",
@@ -714,6 +740,31 @@ ORDER_LINE_LOOSE_RE = re.compile(
     rf"{ORDER_LINE_SEPARATOR}+(?![$\u00a5\uffe5])(?P<qty>[0-9]{{1,3}})(?=\s|$)",
     re.IGNORECASE | re.DOTALL,
 )
+MARKETPLACE_PRICE_TOKEN = (
+    r"(?<![A-Za-z0-9])(?:"
+    r"(?:[$\u00a5\uffe5]\s*)?[0-9sSgGoOlI&]{1,4}\s*[.\uff0e\u00b7]\s*[0-9sSgGoOlI&]{1,2}"
+    r"|[sS]\s*[sS0-9]\s*[.\uff0e\u00b7]\s*[gG9]{1,2}"
+    r"|[$\u00a5\uffe5]\s*[0-9sSgGoOlI&]{1,4}"
+    r")(?![A-Za-z0-9])"
+)
+MARKETPLACE_PRICE_RE = re.compile(MARKETPLACE_PRICE_TOKEN, re.IGNORECASE)
+MARKETPLACE_ITEM_RE = re.compile(
+    rf"(?P<item>.{{8,260}}?)\s+Sold\s+by:?\s+.{1,180}?"
+    rf"(?P<price>{MARKETPLACE_PRICE_TOKEN})(?=\s*(?:[©@]\s*)?(?:Buy\s+it\s+again|View\s+your\s+item|$))",
+    re.IGNORECASE | re.DOTALL,
+)
+MARKETPLACE_CONTROL_MARKERS = (
+    "buy it again",
+    "delivered today",
+    "get product support",
+    "leave seller feedback",
+    "return or replace items",
+    "share gift receipt",
+    "track package",
+    "view your item",
+    "write a product review",
+    "your package was delivered",
+)
 
 
 def normalize_key(value: str) -> str:
@@ -750,6 +801,8 @@ def parse_order_text(text: str, reference: ReferenceData | None = None, today: d
 
     purchase_date = extract_purchase_date(lines, today=today)
     order_lines = extract_order_lines(lines, reference)
+    if not order_lines:
+        order_lines = extract_marketplace_lines(lines, reference)
     if order_lines:
         price = round(sum(line.price or 0 for line in order_lines), 2)
         item = order_lines[0].item if len(order_lines) == 1 else None
@@ -850,6 +903,45 @@ def extract_order_lines(lines: Iterable[str], reference: ReferenceData) -> list[
     return _dedupe_order_lines(results)
 
 
+def extract_marketplace_lines(lines: Iterable[str], reference: ReferenceData) -> list[OrderLine]:
+    text = normalize_ocr_text(" ".join(lines))
+    results: list[OrderLine] = []
+    sold_by_matches = list(re.finditer(r"\bSold\s+by:?\s+", text, flags=re.IGNORECASE))
+    previous_end = 0
+
+    for index, sold_match in enumerate(sold_by_matches):
+        next_sold_start = sold_by_matches[index + 1].start() if index + 1 < len(sold_by_matches) else len(text)
+        item = _clean_marketplace_item(text[previous_end : sold_match.start()])
+        tail = text[sold_match.end() : next_sold_start]
+        price_match = MARKETPLACE_PRICE_RE.search(tail)
+        if not price_match:
+            continue
+        unit_price = _parse_marketplace_price_token(price_match.group(0))
+        if not item or unit_price is None or unit_price <= 0:
+            continue
+        if _is_noise_line(item) or _looks_like_price_noise(item):
+            continue
+
+        category, category_score = choose_category(item, reference)
+        confidence = 0.68 + min(0.18, len(item) / 160)
+        if category:
+            confidence += min(0.1, category_score * 0.1)
+        results.append(
+            OrderLine(
+                item=item,
+                unit_price=unit_price,
+                quantity=1,
+                category=category,
+                confidence=round(min(confidence, 1.0), 2),
+            )
+        )
+        after_price = sold_match.end() + price_match.end()
+        action_match = re.search(r"\bBuy\s+it\s+again\b(?:\s+View\s+your\s+item\b)?", text[after_price:next_sold_start], flags=re.IGNORECASE)
+        previous_end = after_price + (action_match.end() if action_match else 0)
+
+    return _dedupe_order_lines(results)
+
+
 def parse_money_token(value: str) -> float | None:
     normalized = unicodedata.normalize("NFKC", value)
     has_currency = bool(re.search(r"[$\u00a5\uffe5]", normalized))
@@ -869,6 +961,15 @@ def parse_money_token(value: str) -> float | None:
         return round(float(compact), 2)
     except ValueError:
         return None
+
+
+def _parse_marketplace_price_token(value: str) -> float | None:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+    has_currency = bool(re.search(r"[$\u00a5\uffe5]", compact))
+    if not has_currency and re.match(r"^[sS][sS0-9]", compact):
+        compact = "$" + compact[1:]
+    compact = compact.translate(str.maketrans({"S": "5", "s": "5"}))
+    return parse_money_token(compact)
 
 
 def parse_quantity_token(value: str) -> float | None:
@@ -913,6 +1014,39 @@ def _clean_order_item(value: str) -> str:
     if len(text) > 90:
         text = text[-90:].strip(" |,，;；:-_\t\r\n")
     return text
+
+
+def _clean_marketplace_item(value: str) -> str:
+    text = normalize_ocr_text(value)
+    lowered = text.casefold()
+    cut_at = -1
+    for marker in MARKETPLACE_CONTROL_MARKERS:
+        marker_index = lowered.rfind(marker)
+        if marker_index >= 0:
+            cut_at = max(cut_at, marker_index + len(marker))
+    if cut_at >= 0:
+        text = text[cut_at:]
+
+    text = re.sub(
+        r"\b(?:Get\s+product\s+support|Track\s+package|Return\s+or\s+replace\s+items|Share\s+gift\s+receipt|Leave\s+seller\s+feedback|Write\s+a\s+product\s+review|Buy\s+it\s+again|View\s+your\s+item)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bDelivered\s+today\b.*?\bresident\b\.?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" |,.-:\t\r\n")
+    text = _strip_marketplace_leading_noise(text)
+    if len(text) > 240:
+        text = text[:240].strip(" |,.-:\t\r\n")
+    return text
+
+
+def _strip_marketplace_leading_noise(text: str) -> str:
+    return re.sub(
+        r"^(?:[A-Za-z]{1,4}\s+|\d{1,4}\s+){2,}(?=[A-Za-z0-9]+&[A-Za-z0-9]+|[A-Z][A-Z0-9-]{3,}\b)",
+        "",
+        text,
+    ).strip(" |,.-:\t\r\n")
 
 
 def _strip_browser_noise_prefix(text: str) -> str:
@@ -982,6 +1116,9 @@ def extract_purchase_date(lines: Iterable[str], today: date | None = None) -> da
 
 
 def _date_from_line(line: str, today: date) -> date | None:
+    line = _remove_non_purchase_date_ranges(line)
+    if not line.strip():
+        return None
     normalized = (
         line.replace("\u5e74", "-")
         .replace("\u6708", "-")
@@ -1004,6 +1141,15 @@ def _date_from_line(line: str, today: date) -> date | None:
         if parsed:
             return parsed
     return None
+
+
+def _remove_non_purchase_date_ranges(line: str) -> str:
+    return re.sub(
+        r"\b(?:Return\s+(?:or\s+replace\s+)?items?|Eligible\s+through)\b.{0,80}?(?:\d{4}|\d{1,2},\s*\d{4})",
+        " ",
+        line,
+        flags=re.IGNORECASE,
+    )
 
 
 def _parse_date_candidate(value: str, today: date) -> date | None:

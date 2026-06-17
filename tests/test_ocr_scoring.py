@@ -1,6 +1,6 @@
 from PIL import Image, ImageDraw
 
-from order_ocr.ocr import _score_ocr_text, _windows_language_tags, preprocess_image_variants
+from order_ocr.ocr import _is_strong_ocr_candidate, _score_ocr_text, _windows_language_tags, preprocess_image_variants
 
 
 def test_windows_language_tags_include_chinese_and_english_by_default():
@@ -53,3 +53,12 @@ def test_ocr_score_prefers_order_body_over_browser_noise():
     )
 
     assert _score_ocr_text(order_body) > _score_ocr_text(noisy_browser)
+
+
+def test_strong_ocr_candidate_accepts_marketplace_order_blocks():
+    text = (
+        "SMART&CASUAL Cotton Twine Sold by: Smart & Casual Return items: Eligible through July 17, 2026 $5.99 "
+        "BENFEI USB C to HDMI Cable Sold by: BenfeiDirect Return items: Eligible through July 17, 2026 $6.99"
+    )
+
+    assert _is_strong_ocr_candidate(text)

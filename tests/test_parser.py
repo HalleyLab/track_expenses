@@ -269,3 +269,40 @@ def test_parse_chinese_comma_as_price_and_quantity_separator():
     assert candidate.lines[1].item == "\u767d\u6885\u65e5\u5f0f\u7cef\u7c735\u78c5"
     assert candidate.lines[1].unit_price == 10.49
     assert candidate.lines[1].category == "Carbonhydrate"
+
+
+def test_parse_amazon_delivered_items_without_unit_price_labels():
+    reference = ReferenceData(categories=[], item_category={})
+    text = (
+        "Delivered today Your package was delivered. It was handed directly to a resident. "
+        "Get product support Track package Return or replace items Share gift receipt Leave seller feedback "
+        "Write a product review qtJ 01 ET SMART&CASUAL 600 Feet 2mm Cotton Butcher Twine String Soft Food Safe for "
+        "Cooking Craft Baker Kitchen Meat Turkey Sausage Roasting Gift Wrapping Gardening Crocheting Knitting "
+        "Sold by: Smart & Casual Return or replace items: Eligible through July 17, 2026 Ss.gg "
+        "Buy it again View your item BENFEI USB C to HDMI 6 Feet Cable [4K@60Hz, Aluminium Shell, Nylon Braided], "
+        "USB Type-C to HDMI Cable [Thunderbolt 3/4/5] Compatible for MacBook Pro/Air/iPad Pro 2023/2022/2021/2020/2019, Gray "
+        "Sold by: BenfeiDirect Return or replace items: Eligible through July 17, 2026 $6.gg "
+        "Buy it again View your item Diet Coke Diet Soda, 16.9 fl oz Bottles, 6 Pack - Cola Soft Drinks "
+        "Sold by: Amazon.com Return items: Eligible through July 17, 2026 $5.37 "
+        "Buy it again View your item Sprite Zero Sugar Lemon Lime Diet Soda Pop Soft Drinks, 16.9 fl oz, 6 Pack "
+        "Sold by: Amazon.com Return items: Eligible through July 17, 2026 $5.37 "
+        "Buy it again View your item"
+    )
+
+    candidate = parse_order_text(text, reference, today=date(2026, 6, 17))
+
+    assert candidate.purchase_date is None
+    assert candidate.needs_purchase_date
+    assert len(candidate.lines) == 4
+    assert candidate.lines[0].item.startswith("SMART&CASUAL 600 Feet")
+    assert candidate.lines[0].unit_price == 5.99
+    assert candidate.lines[0].category == "Daily Necessities"
+    assert "BENFEI USB C to HDMI" in candidate.lines[1].item
+    assert candidate.lines[1].unit_price == 6.99
+    assert candidate.lines[1].category == "Electronics"
+    assert candidate.lines[2].item.startswith("Diet Coke Diet Soda")
+    assert candidate.lines[2].unit_price == 5.37
+    assert candidate.lines[2].category == "Drinks"
+    assert candidate.lines[3].item.startswith("Sprite Zero Sugar")
+    assert candidate.lines[3].unit_price == 5.37
+    assert candidate.lines[3].category == "Drinks"

@@ -184,6 +184,29 @@ def _dedupe_image_variants(variants: list[tuple[str, Image.Image]]) -> list[tupl
     return unique
 
 
+def _select_ocr_variants(variants: list[tuple[str, Image.Image]]) -> list[tuple[str, Image.Image]]:
+    preferred_names = (
+        "full-sharp",
+        "full-threshold",
+        "full-unsharp",
+        "no-top-ui-sharp",
+        "trim-sides-sharp",
+        "no-top-ui-threshold",
+    )
+    by_name = {name: image for name, image in variants}
+    selected: list[tuple[str, Image.Image]] = [
+        (name, by_name[name])
+        for name in preferred_names
+        if name in by_name
+    ]
+    for candidate in variants:
+        if len(selected) >= 6:
+            break
+        if candidate[0] not in {name for name, _ in selected}:
+            selected.append(candidate)
+    return selected
+
+
 def _language_attempts(languages: str) -> Iterable[str]:
     yield languages
     if languages != "eng":
@@ -226,17 +249,22 @@ def ocr_image(image: Image.Image | Path | str, languages: str = "eng+chi_sim") -
         source.save(original_path)
         cleanup_paths.append(original_path)
 
-    variant_paths: list[tuple[str, Path]] = []
-    for name, variant in preprocess_image_variants(source):
-        handle = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        handle.close()
-        variant_path = Path(handle.name)
-        variant.save(variant_path)
-        cleanup_paths.append(variant_path)
-        variant_paths.append((name, variant_path))
-
     try:
         candidates: list[str] = []
+        text = _ocr_with_windows(original_path, languages)
+        _add_ocr_candidate(candidates, text)
+        if _is_strong_ocr_candidate(text):
+            return text.strip()
+
+        variant_paths: list[tuple[str, Path]] = []
+        for name, variant in _select_ocr_variants(preprocess_image_variants(source)):
+            handle = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            handle.close()
+            variant_path = Path(handle.name)
+            variant.save(variant_path)
+            cleanup_paths.append(variant_path)
+            variant_paths.append((name, variant_path))
+
         tesseract = find_tesseract()
         if tesseract:
             for _, variant_path in variant_paths:
@@ -245,13 +273,14 @@ def ocr_image(image: Image.Image | Path | str, languages: str = "eng+chi_sim") -
                 except OCRUnavailable:
                     text = ""
                 _add_ocr_candidate(candidates, text)
-
-        text = _ocr_with_windows(original_path, languages)
-        _add_ocr_candidate(candidates, text)
+                if _is_strong_ocr_candidate(text):
+                    return text.strip()
 
         for _, variant_path in variant_paths:
             text = _ocr_with_windows(variant_path, languages)
             _add_ocr_candidate(candidates, text)
+            if _is_strong_ocr_candidate(text):
+                return text.strip()
 
         if candidates:
             return max(candidates, key=_score_ocr_text)
@@ -336,6 +365,19 @@ def _add_ocr_candidate(candidates: list[str], text: str) -> None:
     candidates.append(text.strip())
 
 
+def _is_strong_ocr_candidate(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    lowered = text.casefold()
+    line_item_hits = len(
+        re.findall(r"(?:\u5355\s*\u4ef7|\u5355\s*[1il]?\s*[\u98e0\u98df]|unit\s*price|price)\s*[:\uff1a]?", lowered)
+    )
+    quantity_hits = len(re.findall(r"(?:\u6570\s*\u91cf|\u6578\s*\u91cf|\u91cc|qty|quantity)\s*[:\uff1a.]?", lowered))
+    prices = len(re.findall(r"[$\u00a5\uffe5]\s*\d(?:\s*[,.．·]\s*\d{1,2}|\s+\d\s*\d)?|\d+\.\d{2}", text))
+    sold_by_hits = len(re.findall(r"\bsold\s+by\b", lowered))
+    return (min(line_item_hits, quantity_hits) >= 2 and prices >= 2) or (sold_by_hits >= 2 and prices >= 2)
+
+
 def _score_ocr_text(text: str) -> float:
     lowered = text.casefold()
     cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
@@ -349,6 +391,7 @@ def _score_ocr_text(text: str) -> float:
     )
     quantity_hits = len(re.findall(r"(?:\u6570\s*\u91cf|\u6578\s*\u91cf|\u91cc|qty|quantity)\s*[:\uff1a.]?", lowered))
     ui_noise_hits = sum(1 for keyword in UI_NOISE_KEYWORDS if keyword in lowered)
+    marketplace_hits = len(re.findall(r"\bsold\s+by\b|\bbuy\s+it\s+again\b|\bview\s+your\s+item\b", lowered))
     browser_noise_hits = len(
         re.findall(r"(?:amazon|onedrive|pubmed|github|search|mywebpage|documents|browser|reload|clipboard)", lowered)
     )
@@ -374,6 +417,7 @@ def _score_ocr_text(text: str) -> float:
         + paired_line_bonus
         + chinese_units * 6
         + food_terms * 8
+        + marketplace_hits * 14
         + compact_len * 0.03
         - odd_chars * 2
         - ui_noise_hits * 10
