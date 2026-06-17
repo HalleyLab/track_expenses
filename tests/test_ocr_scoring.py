@@ -62,3 +62,30 @@ def test_strong_ocr_candidate_accepts_marketplace_order_blocks():
     )
 
     assert _is_strong_ocr_candidate(text)
+
+
+def test_marketplace_side_rail_noise_does_not_short_circuit_ocr():
+    clean = (
+        "SMART&CASUAL Cotton Twine Sold by: Smart & Casual Return items: Eligible through July 17, 2026 $5.99 "
+        "BENFEI USB C to HDMI Cable Sold by: BenfeiDirect Return items: Eligible through July 17, 2026 $6.99"
+    )
+    noisy = "WHOLE FOODS 2 items $2.98 Add $22.02 for FREE delivery Co to Cart $1.49 " + clean
+
+    assert _is_strong_ocr_candidate(clean)
+    assert not _is_strong_ocr_candidate(noisy)
+    assert _score_ocr_text(clean) > _score_ocr_text(noisy)
+
+
+def test_preprocess_image_variants_include_browser_order_body_crops():
+    image = Image.new("RGB", (1800, 1000), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((360, 220, 1280, 900), outline=(180, 180, 180), width=3)
+    draw.text((500, 320), "SMART&CASUAL Cotton Twine", fill=(20, 20, 20))
+    draw.text((500, 360), "Sold by: Smart Casual", fill=(20, 20, 20))
+    draw.text((1680, 220), "Go to Cart", fill=(20, 20, 20))
+
+    names = {name for name, _ in preprocess_image_variants(image)}
+
+    assert "browser-order-main-sharp" in names
+    assert "browser-order-list-sharp" in names
+    assert "no-right-rail-sharp" in names

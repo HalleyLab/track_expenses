@@ -315,7 +315,7 @@ def test_parse_noisy_web_order_sold_by_blocks_with_cart_noise():
         "Delivered today Your package was delivered. It was handed directly to a resident. "
         "Get product support Track package Return or replace items Share gift receipt Leave seller feedback "
         "Write a product review Get product support Track package Return or replace items All Bookmarks WHOLE "
-        "June 2 items $2.98 Add $22.02 for FREE delivery Go to Cart $1.49 qJ "
+        "June 2 items $2.98 Add $22.02 for FREE delivery Co to Cart $1.49 qJ "
         "SMART&CASUAL 600 Feet 2mm Cotton Butcher Twine String Soft Food Safe for Cooking Craft Baker Kitchen Meat Turkey "
         "Sausage Roasting Gift Wrapping Gardening Crocheting Knitting Sold by: Smart Casual "
         "Return or replace items: Eligible through July 17, 2026 S.g Buy it again View your item "
@@ -334,7 +334,9 @@ def test_parse_noisy_web_order_sold_by_blocks_with_cart_noise():
     assert candidate.purchase_date is None
     assert len(candidate.lines) == 4
     assert candidate.lines[0].item.startswith("SMART&CASUAL 600 Feet")
+    assert not candidate.lines[0].item.startswith("Co to Cart")
     assert "Go to Cart" not in candidate.lines[0].item
+    assert "Co to Cart" not in candidate.lines[0].item
     assert "$1.49" not in candidate.lines[0].item
     assert candidate.lines[0].unit_price == 5.99
     assert candidate.lines[1].item.startswith("BENFEI USB C to HDMI")

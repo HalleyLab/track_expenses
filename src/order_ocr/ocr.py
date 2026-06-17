@@ -69,6 +69,14 @@ UI_NOISE_KEYWORDS = (
     "workbook",
 )
 
+SIDE_RAIL_NOISE_RE = re.compile(
+    r"\b(?:go|co)\s+to\s+cart\b|"
+    r"\badd\s+\$?\d+(?:\.\d{2})?\s+for\s+free\s+delivery\b|"
+    r"\ball\s+bookmarks?\b|"
+    r"\bwhole\s+foods\b",
+    re.IGNORECASE,
+)
+
 
 def find_tesseract() -> str | None:
     env_path = os.environ.get("TESSERACT_CMD")
@@ -145,6 +153,22 @@ def _ocr_regions(image: Image.Image) -> list[tuple[str, Image.Image]]:
         if 0 < top_crop < height // 3:
             regions.append(("no-top-ui", source.crop((0, top_crop, width, height))))
 
+    if width >= 1200 and height >= 650:
+        top_crop = int(height * 0.09)
+        right_crop = int(width * 0.82)
+        if 0 < top_crop < height and right_crop > width // 2:
+            regions.append(("no-right-rail", source.crop((0, top_crop, right_crop, height))))
+
+        order_left = int(width * 0.18)
+        order_right = int(width * 0.72)
+        order_top = int(height * 0.10)
+        if order_right - order_left >= 520:
+            regions.append(("browser-order-main", source.crop((order_left, order_top, order_right, height))))
+
+        list_top = int(height * 0.24)
+        if list_top < height - 200 and order_right - order_left >= 520:
+            regions.append(("browser-order-list", source.crop((order_left, list_top, order_right, height))))
+
     if width >= 900:
         side_crop = int(width * 0.035)
         if side_crop > 0:
@@ -186,12 +210,14 @@ def _dedupe_image_variants(variants: list[tuple[str, Image.Image]]) -> list[tupl
 
 def _select_ocr_variants(variants: list[tuple[str, Image.Image]]) -> list[tuple[str, Image.Image]]:
     preferred_names = (
+        "browser-order-main-sharp",
+        "browser-order-main-threshold",
+        "browser-order-list-sharp",
+        "no-right-rail-sharp",
         "full-sharp",
         "full-threshold",
         "full-unsharp",
         "no-top-ui-sharp",
-        "trim-sides-sharp",
-        "no-top-ui-threshold",
     )
     by_name = {name: image for name, image in variants}
     selected: list[tuple[str, Image.Image]] = [
@@ -199,8 +225,10 @@ def _select_ocr_variants(variants: list[tuple[str, Image.Image]]) -> list[tuple[
         for name in preferred_names
         if name in by_name
     ]
+    if len(selected) >= 5:
+        return selected[:5]
     for candidate in variants:
-        if len(selected) >= 6:
+        if len(selected) >= 5:
             break
         if candidate[0] not in {name for name, _ in selected}:
             selected.append(candidate)
@@ -251,13 +279,34 @@ def ocr_image(image: Image.Image | Path | str, languages: str = "eng+chi_sim") -
 
     try:
         candidates: list[str] = []
+        precomputed_variants: list[tuple[str, Image.Image]] | None = None
+        first_pass_names: set[str] = set()
+
+        if _should_try_order_body_first(source):
+            precomputed_variants = preprocess_image_variants(source)
+            for name, variant in _order_body_first_variants(precomputed_variants):
+                handle = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                handle.close()
+                variant_path = Path(handle.name)
+                variant.save(variant_path)
+                cleanup_paths.append(variant_path)
+                first_pass_names.add(name)
+
+                text = _ocr_with_windows(variant_path, languages)
+                _add_ocr_candidate(candidates, text)
+                if _is_strong_ocr_candidate(text):
+                    return text.strip()
+
         text = _ocr_with_windows(original_path, languages)
         _add_ocr_candidate(candidates, text)
         if _is_strong_ocr_candidate(text):
             return text.strip()
 
         variant_paths: list[tuple[str, Path]] = []
-        for name, variant in _select_ocr_variants(preprocess_image_variants(source)):
+        variants = precomputed_variants if precomputed_variants is not None else preprocess_image_variants(source)
+        for name, variant in _select_ocr_variants(variants):
+            if name in first_pass_names:
+                continue
             handle = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             handle.close()
             variant_path = Path(handle.name)
@@ -292,6 +341,20 @@ def ocr_image(image: Image.Image | Path | str, languages: str = "eng+chi_sim") -
     finally:
         for path in cleanup_paths:
             path.unlink(missing_ok=True)
+
+
+def _should_try_order_body_first(image: Image.Image) -> bool:
+    return image.width >= 1200 and image.height >= 650
+
+
+def _order_body_first_variants(variants: list[tuple[str, Image.Image]]) -> list[tuple[str, Image.Image]]:
+    preferred_names = (
+        "browser-order-main-sharp",
+        "browser-order-list-sharp",
+        "no-right-rail-sharp",
+    )
+    by_name = {name: image for name, image in variants}
+    return [(name, by_name[name]) for name in preferred_names if name in by_name]
 
 
 def _ocr_with_tesseract(tesseract: str, image_path: Path, languages: str) -> str:
@@ -368,6 +431,8 @@ def _add_ocr_candidate(candidates: list[str], text: str) -> None:
 def _is_strong_ocr_candidate(text: str) -> bool:
     if not text or not text.strip():
         return False
+    if _has_side_rail_noise(text):
+        return False
     lowered = text.casefold()
     line_item_hits = len(
         re.findall(r"(?:\u5355\s*\u4ef7|\u5355\s*[1il]?\s*[\u98e0\u98df]|unit\s*price|price)\s*[:\uff1a]?", lowered)
@@ -376,6 +441,10 @@ def _is_strong_ocr_candidate(text: str) -> bool:
     prices = len(re.findall(r"[$\u00a5\uffe5]\s*\d(?:\s*[,.．·]\s*\d{1,2}|\s+\d\s*\d)?|\d+\.\d{2}", text))
     sold_by_hits = len(re.findall(r"\bsold\s+by\b", lowered))
     return (min(line_item_hits, quantity_hits) >= 2 and prices >= 2) or (sold_by_hits >= 2 and prices >= 2)
+
+
+def _has_side_rail_noise(text: str) -> bool:
+    return bool(SIDE_RAIL_NOISE_RE.search(text))
 
 
 def _score_ocr_text(text: str) -> float:
@@ -391,6 +460,7 @@ def _score_ocr_text(text: str) -> float:
     )
     quantity_hits = len(re.findall(r"(?:\u6570\s*\u91cf|\u6578\s*\u91cf|\u91cc|qty|quantity)\s*[:\uff1a.]?", lowered))
     ui_noise_hits = sum(1 for keyword in UI_NOISE_KEYWORDS if keyword in lowered)
+    side_rail_noise_hits = len(SIDE_RAIL_NOISE_RE.findall(text))
     marketplace_hits = len(re.findall(r"\bsold\s+by\b|\bbuy\s+it\s+again\b|\bview\s+your\s+item\b", lowered))
     browser_noise_hits = len(
         re.findall(r"(?:amazon|onedrive|pubmed|github|search|mywebpage|documents|browser|reload|clipboard)", lowered)
@@ -421,5 +491,6 @@ def _score_ocr_text(text: str) -> float:
         + compact_len * 0.03
         - odd_chars * 2
         - ui_noise_hits * 10
+        - side_rail_noise_hits * 70
         - browser_noise_hits * 6
     )

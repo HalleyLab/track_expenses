@@ -759,7 +759,7 @@ MARKETPLACE_SELLER_RE = re.compile(
 )
 MARKETPLACE_ACTION_RE = re.compile(
     r"\b(?:"
-    r"Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|Go\s+to\s+cart|"
+    r"Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|(?:Go|Co)\s+to\s+cart|"
     r"Return\s+or\s+replace\s+items|Track\s+package|Leave\s+seller\s+feedback|"
     r"Write\s+a\s+product\s+review|Share\s+gift\s+receipt"
     r")\b",
@@ -770,6 +770,7 @@ MARKETPLACE_CONTROL_MARKERS = (
     "add to cart",
     "add to list",
     "buy it again",
+    "co to cart",
     "delivered today",
     "for free delivery",
     "get product support",
@@ -1049,7 +1050,7 @@ def _clean_marketplace_item(value: str) -> str:
         text = text[cut_at:]
 
     text = re.sub(
-        r"\b(?:Get\s+product\s+support|Track\s+package|Return\s+or\s+replace\s+items|Share\s+gift\s+receipt|Leave\s+seller\s+feedback|Write\s+a\s+product\s+review|Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|Go\s+to\s+cart)\b",
+        r"\b(?:Get\s+product\s+support|Track\s+package|Return\s+or\s+replace\s+items|Share\s+gift\s+receipt|Leave\s+seller\s+feedback|Write\s+a\s+product\s+review|Buy\s+it\s+again|View\s+your\s+item|Add\s+to\s+cart|Add\s+to\s+bag|(?:Go|Co)\s+to\s+cart)\b",
         " ",
         text,
         flags=re.IGNORECASE,
@@ -1069,13 +1070,16 @@ def _strip_marketplace_leading_price_noise(text: str) -> str:
     if not price_matches:
         return text
     tail = text[price_matches[-1].end() :].strip(" |,.-:\t\r\n")
-    if _looks_like_marketplace_title_start(tail):
-        return tail
+    cleaned_tail = _strip_marketplace_leading_noise(tail)
+    if _looks_like_marketplace_title_start(cleaned_tail):
+        return cleaned_tail
     return text
 
 
 def _strip_marketplace_leading_noise(text: str) -> str:
     tokens = text.split()
+    if tokens and _looks_like_marketplace_title_start(text) and not _is_ocr_noise_token(tokens[0]):
+        return text.strip(" |,.-:\t\r\n")
     for index in range(1, min(5, len(tokens))):
         prefix = tokens[:index]
         tail = " ".join(tokens[index:])
